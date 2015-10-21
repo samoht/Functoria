@@ -326,8 +326,8 @@ module Config = struct
   (* FIXME(samoht): I don't understand why eval return a function
      which take a context. Is this supposed to be different from the
      one passed as argument? *)
-  let eval context { name = n; root; packages; libraries; keys; jobs } =
-    let e = Graph.eval ~context jobs in
+  let eval ~partial context { name = n; root; packages; libraries; keys; jobs } =
+    let e = Graph.eval ~partial ~context jobs in
     let pkgs = Key.(pure String.Set.union $ packages $ Engine.packages e) in
     let libs = Key.(pure String.Set.union $ libraries $ Engine.libraries e) in
     let list = String.Set.elements in
@@ -349,10 +349,10 @@ module Config = struct
   let name t = t.name
   let keys t = t.keys
 
-  let gen_pp pp ~partial ~context fmt jobs =
-    pp fmt @@ Graph.simplify @@ Graph.eval ~partial ~context jobs
+  let gen_pp pp fmt jobs =
+    pp fmt @@ Graph.simplify jobs
 
-  let pp i = gen_pp (Graph.pp i)
+  let pp = gen_pp Graph.pp
   let pp_dot = gen_pp Graph.pp_dot
 
 end
@@ -482,14 +482,8 @@ module Make (P: S) = struct
           root root
       )
 
-  let show_keys context keys =
-    Log.info "%a %a" Log.blue "Keys:" (Key.pps context) keys
-
-  let describe info ~dotcmd ~dot ~eval ~output ~context { Config.jobs; _ } =
-    let f fmt =
-      let dot = if dot then Config.pp_dot else Config.pp info in
-      dot ~partial:(not eval) ~context fmt jobs
-    in
+  let describe _info ~dotcmd ~dot ~output jobs =
+    let f fmt = (if dot then Config.pp_dot else Config.pp) fmt jobs in
     let with_fmt f = match output with
       | None when dot ->
         let f oc = Cmd.with_channel oc f in
@@ -579,14 +573,15 @@ module Make (P: S) = struct
     let configure (jobs, info) = configure info jobs
     let clean (jobs, info) = clean info jobs
     let build (_jobs, info) = build info
-    let describe (_jobs, info) context t = describe info ~context t
+    let describe (jobs, info) = describe info jobs
 
-    let eval context t =
-      let info = Config.eval context t in
+    let eval ~partial context t =
+      let info = Config.eval ~partial context t in
       let context = Key.context ~stage:`Configure (Key.deps info) in
       let f map =
-        show_keys map @@ Key.deps info;
-        Key.eval map info @@ map
+        let e = Key.eval map info @@ map in
+        Log.info "@[<v>%a@]" (Info.pp false) (snd e) ;
+        e
       in
       Cmdliner.Term.(pure f $ context)
   end
