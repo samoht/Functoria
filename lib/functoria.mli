@@ -183,6 +183,9 @@ module Info: sig
   val root: t -> Fpath.t
   (** Directory in which the configuration is done. *)
 
+  val config: t -> Fpath.t
+  (** Configuration file. *)
+
   val libraries: t -> string list
   (** OCamlfind libraries needed by the project at runtime. *)
 
@@ -206,7 +209,8 @@ module Info: sig
     keys:key list ->
     context:context ->
     name:string ->
-    root:Fpath.t -> t
+    root:Fpath.t ->
+    config:Fpath.t -> t
 
   val pp: bool -> t Fmt.t
 

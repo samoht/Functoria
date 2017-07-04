@@ -330,8 +330,9 @@ end
 module Config = struct
 
   type t = {
-    name     : string;
-    root     : Fpath.t;
+    name    : string;
+    root    : Fpath.t;
+    file    : Fpath.t;
     packages: package list Key.value;
     keys    : Key.Set.t;
     init    : job impl list;
@@ -350,25 +351,22 @@ module Config = struct
     in
     Key.Set.fold f all_keys skeys
 
-  let make ?(keys=[]) ?(packages=[]) ?(init=[]) name root
-      main_dev =
+  let make ?(keys=[]) ?(packages=[]) ?(init=[]) ~name ~root ~file main_dev =
     let name = Name.ocamlify name in
     let jobs = Graph.create main_dev in
     let packages = Key.pure @@ packages in
     let keys = Key.Set.(union (of_list keys) (get_if_context jobs)) in
-    { packages; keys; name; root; init; jobs }
+    { packages; keys; name; root; file; init; jobs }
 
-  let eval ~partial context
-      { name = n; root; packages; keys; jobs; init }
+  let eval ~partial context {
+      name = n; root; file = config; packages; keys; jobs; init }
     =
     let e = Graph.eval ~partial ~context jobs in
     let packages = Key.(pure List.append $ packages $ Engine.packages e) in
     let keys = Key.Set.elements (Key.Set.union keys @@ Engine.keys e) in
     Key.(pure (fun packages _ context ->
         ((init, e),
-         Info.create
-           ~packages
-           ~keys ~context ~name:n ~root))
+         Info.create ~packages ~keys ~context ~name:n ~root ~config))
          $ packages
          $ of_deps (Set.of_list keys))
 
@@ -475,17 +473,20 @@ module Make (P: S) = struct
   module Log = (val Logs.src_log src : Logs.LOG)
 
   let configuration = ref None
-  let config_file = Fpath.(v "config.ml")
+  let config_file = ref Fpath.(v "config.ml")
 
   let get_root () =
     match Bos.OS.Dir.current () with
-    | Ok p -> p
+    | Ok p    -> p
     | Error e -> R.error_msg_to_invalid_arg (Error e)
+
+  let get_file () = !config_file
 
   let register ?packages ?keys ?(init=[]) name jobs =
     let root = get_root () in
+    let file = get_file () in
     let main_dev = P.create (init @ jobs) in
-    let c = Config.make ?keys ?packages ~init name root main_dev in
+    let c = Config.make ?keys ?packages ~init ~name ~root ~file main_dev in
     configuration := Some c
 
   let registered () =
@@ -513,7 +514,7 @@ module Make (P: S) = struct
     Bos.OS.File.delete Fpath.(v "main.ml")
 
   let configure i jobs =
-    Log.info (fun m -> m "Using configuration: %a" Fpath.pp config_file);
+    Log.info (fun m -> m "Using configuration: %a" Fpath.pp (Info.config i));
     Log.info (fun m -> m "output: %a" Fmt.(option string) (Info.output i));
     Log.info (fun m -> m "within: %a" Fpath.pp (Info.root i));
     with_current
@@ -522,14 +523,14 @@ module Make (P: S) = struct
       "configure"
 
   let build i jobs =
-    Log.info (fun m -> m "Building: %a" Fpath.pp config_file);
+    Log.info (fun m -> m "Building: %a" Fpath.pp (Info.config i));
     with_current
       (Info.root i)
       (fun () -> Engine.build i jobs)
       "build"
 
   let clean i (_init, job) =
-    Log.info (fun m -> m "Cleaning: %a" Fpath.pp config_file);
+    Log.info (fun m -> m "Cleaning: %a" Fpath.pp (Info.config i));
     with_current
       (Info.root i)
       (fun () ->
@@ -564,13 +565,23 @@ module Make (P: S) = struct
     and root = get_root ()
     in
     Bos.OS.Path.matches Fpath.(root / "_build" // cfg + "$(ext)") >>= fun files ->
-    List.fold_left (fun r p -> r >>= fun () -> Bos.OS.Path.delete p) (R.ok ()) files >>= fun () ->
+    List.fold_left (fun r p ->
+        r >>= fun () -> Bos.OS.Path.delete p
+      ) (R.ok ()) files >>= fun () ->
     with_current root
       (fun () ->
+         let jbuild =
+           Fmt.strf
+             "(jbuild_version 1)\n\
+              \n\
+              (library\n\
+             \   ((name      %s)\n\
+             \    (libraries (%s))))\n\
+             " Fpath.(filename cfg) P.name
+         in
+         Bos.OS.File.write Fpath.(parent cfg / "jbuild") jbuild >>= fun () ->
          let cmd =
-           Bos.Cmd.(v "ocamlbuild" % "-use-ocamlfind" % "-classic-display" %
-                    "-tags" % "bin_annot" % "-quiet" %
-                    "-X" % "_build-ukvm" % "-pkg" % P.name % file)
+           Bos.Cmd.(v "jbuilder" % "build" % file)
          in
          Bos.OS.Cmd.run_out cmd |> Bos.OS.Cmd.out_string >>= fun (out, status) ->
          match snd status with
@@ -640,6 +651,7 @@ module Make (P: S) = struct
     | Error (`Msg m) ->
       R.pp_msg Format.std_formatter (`Msg m) ;
       print_newline ();
+      flush_all ();
       exit 1
 
   let with_output i = function
@@ -689,6 +701,8 @@ module Make (P: S) = struct
     let module Cmd = Functoria_command_line in
     (* 1. (a) Pre-parse the arguments set the log level. *)
     ignore (Cmdliner.Term.eval_peek_opts ~argv Cmd.setup_log);
+    ignore (Cmdliner.Term.eval_peek_opts ~argv @@
+            Cmd.config_file (fun c -> config_file := c));
 
     (*    (b) whether to fully evaluate the graph *)
     let full_eval = Cmd.read_full_eval argv in
@@ -700,7 +714,7 @@ module Make (P: S) = struct
          3. an attempt is made to access the base keys at this point.
             when they weren't loaded *)
 
-      match load' config_file with
+      match load' !config_file with
       | Error (`Invalid_config_ml err) -> exit_err (Error (`Msg err))
       | Error (`Msg _ as err) -> handle_parse_args_no_config err argv
       | Ok config ->

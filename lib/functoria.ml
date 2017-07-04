@@ -136,12 +136,14 @@ module Info = struct
   type t = {
     name: string;
     output: string option;
+    config: Fpath.t;
     root: Fpath.t;
     keys: Key.Set.t;
     context: Key.context;
     packages: package String.Map.t;
   }
 
+  let config t = t.config
   let name t = t.name
   let root t = t.root
   let output t = t.output
@@ -154,7 +156,7 @@ module Info = struct
   let keys t = Key.Set.elements t.keys
   let context t = t.context
 
-  let create ~packages ~keys ~context ~name ~root =
+  let create ~packages ~keys ~context ~name ~root ~config =
     let keys = Key.Set.of_list keys in
     let packages = List.fold_left (fun m p ->
         let n = p.opam in
@@ -165,7 +167,7 @@ module Info = struct
           | None -> invalid_arg ("bad version constraints in " ^ p.opam))
         String.Map.empty packages
     in
-    { name; root; keys; packages; context; output = None }
+    { name; config; root; keys; packages; context; output = None }
 
   let pp_packages ?(surround = "") ?sep ppf t =
     Fmt.pf ppf "%a" (Fmt.iter ?sep List.iter (Package.pp_package surround)) (packages t)
